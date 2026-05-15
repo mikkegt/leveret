@@ -153,7 +153,7 @@ allow = false {
 **SIEM** = Security Information and Event Management
 システム全部のログを集めて、検知ルールで自動アラートを出す集中監視所。
 
-- 入力: サーバー・ネットワーク機器・クラウド・アプリの**ログ**を全部集める
+- 入力: サーバー・ネットワーク機器・クラウド・アプリのログを全部集める
 - 処理: 正規化 → 相関分析 → 検知ルールにマッチしたらアラート
 - 出力: セキュリティアナリストに「これ調べて」と通知
 - 製品例: Splunk（業界標準）、IBM QRadar、ArcSight、Elastic SIEM、Microsoft Sentinel、Datadog Security
@@ -181,7 +181,7 @@ SIEM が出したアラートを受けて、調査と対応を自動化するワ
 | 対応 | Bash で `iptables -A` | SOAR のプレイブック |
 | 監視UI | tail を tmux で眺める | SIEM のダッシュボード |
 
-DevOps の **Datadog / New Relic / Sentry** に近いが、セキュリティ専用で「攻撃検知」「フォレンジック」に最適化されている。
+DevOps の Datadog / New Relic / Sentry に近いが、セキュリティ専用で「攻撃検知」「フォレンジック」に最適化されている。
 
 C++ で言えば、`std::ifstream` でログ読んで `std::regex` でマッチして `std::cout` に流すような処理を、全社規模で・全ホストから・リアルタイムでやる巨大プラットフォーム。
 
@@ -206,7 +206,161 @@ leveret は SIEM の後ろに付くツール。
 
 ## 第2章 セキュリティアラート分析とLLMエージェント
 
-<!-- 未着手 -->
+### セキュリティアラートの守備範囲
+
+アラートはアンチウィルス・IDS・EDR・ファイアウォール等の検知だけではない。
+
+- 新しい脆弱性情報（CVE 公開など）
+- 3rd party パッケージのサプライチェーン攻撃
+- 内部システムの設定不備
+- セキュリティ上の問題がありそうな通知全般
+
+→ 守備範囲が広いほどルールで全部押さえるのが困難。第1章の「決定性アプローチの限界」とつながる。
+
+### 担当者の3大負荷タスク
+
+| タスク | 内容 |
+|---|---|
+| 初期分析 | このアラートは無視してよいか、影響があるかの調査 |
+| 発報調整 | 無視してよいものを弾くためのルールチューニング |
+| 結果整理 | 大量アラートから影響あるものを洗い出す triage |
+
+leveret が支援するのは主に 初期分析 と 結果整理。
+
+### 用語の整理
+
+| 用語 | 範囲 |
+|---|---|
+| 生成AI | テキスト・画像・音声などコンテンツ生成 AI 全般（Stable Diffusion 等も含む） |
+| LLM | 生成AIの一種、テキスト特化（ChatGPT、Claude、Gemini） |
+| LLMエージェント | LLM を中核に、自律的に行動するシステム |
+
+#### LLMエージェントの3要素
+
+1. ツール呼び出し — 外部 API・DB を自ら選んで実行
+2. 計画と実行 — 複雑なタスクをステップ分解して順序実行
+3. 状態管理 — 過去の会話や結果を記憶して文脈考慮
+
+→ 単なる対話 LLM との違いはこの3点。leveret もこの構造で作る。
+
+### 本書の実装方針
+
+- **LangChain / LangGraph を使わない**。Go で LLM サービスの API のみ使ってフルスクラッチ
+
+#### なぜフルスクラッチ？
+
+明示的には書かれてないが推測:
+- LangChain は変化が激しく、薄いラッパーがすぐ陳腐化
+- ある特定ドメイン（セキュリティ）に特化するなら、抽象レイヤーは自分で持つほうが拡張性が高い
+- Go の型システムでドメインモデルを表現したい
+- 学習目的では中身を全部見える状態にしたい
+
+C/C++ の世界で言えば、ライブラリ依存を減らして自前で実装する流派と近い感覚。CG 系の人が「DirectX 使わず OpenGL も使わず描画ループを自分で書く」みたいな志向。
+
+### 先取りキーワード（後の章で詳述される）
+
+- **Lost in the middle**: 長い履歴の中央部分が LLM に無視される現象
+- **Recency Bias**: 直近の履歴に過度に影響される偏り
+- **RAG** (Retrieval-Augmented Generation): 検索した情報を生成に活用するパターン
+- **MCP** (Model Context Protocol): ツール接続を標準化するプロトコル
+- **AlienVault OTX**: 脅威インテリジェンス（IoC 評価）の公開 API
+- **AIワークフロー** vs **Plan & Execute**: 決定性と柔軟性のバランスを取る2つのパターン
+
+---
+
+### IoC とは
+
+**IoC** = Indicator of Compromise（侵害指標、侵害の痕跡）
+
+「攻撃や侵害があったことを示す具体的なデータ片」のこと。アラートの本文や検知ログの中に埋め込まれている。
+
+#### よく使われる IoC の種類
+
+| 種類 | 例 |
+|---|---|
+| IP アドレス | C&C サーバの送信元 `185.220.101.42` |
+| ドメイン名 | フィッシングサイト `evil-bank.example.com` |
+| URL | マルウェア配布 `http://bad.example.com/payload.exe` |
+| ファイルハッシュ | マルウェア検体の SHA256 `3a7bd3...` |
+| メールアドレス | フィッシング送信元 `attacker@example.com` |
+| ユーザーエージェント | 攻撃ツール特有の文字列 `sqlmap/1.5` |
+| レジストリキー | Windows 永続化用のキーパス |
+| 証明書フィンガープリント | 怪しい SSL 証明書の指紋 |
+
+#### 何に使うか
+
+- 脅威インテリジェンスフィードとの照合 — VirusTotal、AlienVault OTX 等に問い合わせて「これ既知の悪性？」を確認
+- 過去ログ検索 — 「この IP がうちに来てた？」と SIEM で hunting
+- ブロックリスト追加 — ファイアウォール・WAF・DNS フィルタに追加
+
+#### leveret での扱い
+
+leveret の `Alert` モデルに `Attributes` フィールドがある:
+
+```go
+type Attribute struct {
+    Key   string
+    Value string
+    Type  AttributeType  // string, number, ip_address, etc.
+}
+```
+
+第7章「構造化データ出力で IoC など属性値を抽出する」で、LLM にアラート JSON を読ませて IoC を `Attributes` として抜き出す処理を実装するはず？
+
+#### C/C++/プログラミング的アナロジー
+
+- ハッシュ値による識別に近い感覚 — `sha256(malware.exe)` のように、攻撃対象を一意に指す ID
+- ブロックリストを作る時の要素 — `iptables -A INPUT -s <IP> -j DROP` の `<IP>` 部分が IoC
+- C++ の例えで言えば、`std::unordered_set<std::string> known_bad_ips;` の中身が IoC のリスト。アラートが来たら `if (known_bad_ips.count(ip))` で照合する、その照合対象データ
+
+#### 用語のニュアンス
+
+- 表記: 「IoC」「IOC」両方使われる（書籍では「IoC」）
+- 関連語: **IoA** (Indicator of Attack、攻撃手法の指標、TTPs に近い)、**TTPs** (Tactics, Techniques, Procedures、攻撃者の振る舞いパターン)
+- IoC は「過去の痕跡」寄り、IoA / TTPs は「攻撃の手口」寄り、というニュアンス差
+
+---
+
+### IDS / EDR とは
+
+セキュリティ監視ツールの代表格。アラートを発報する側のシステム。
+
+**IDS** = Intrusion Detection System（侵入検知システム）
+- ネットワーク（NIDS）またはホスト（HIDS）を監視して攻撃を検知
+- 検知のみ（ブロックはしない）
+- 製品例: Snort、Suricata、Zeek
+
+近い概念: **IPS** (Intrusion Prevention System) = IDS + 自動ブロック。
+
+**EDR** = Endpoint Detection and Response
+- PC・サーバー等のエンドポイントに常駐するエージェント
+- プロセス挙動・ファイル操作・レジストリ等を記録、挙動分析で検知
+- AV (アンチウィルス) の進化形、検知 + 自動隔離・調査もできる
+- 製品例: CrowdStrike Falcon、SentinelOne、Microsoft Defender for Endpoint
+
+#### 並べると
+
+| | 監視対象 | 検知方法 | 応答 |
+|---|---|---|---|
+| AV | エンドポイント | シグネチャ | ファイル削除 |
+| IDS | ネットワーク or ホスト | パケット解析、シグネチャ、異常検知 | 検知のみ |
+| IPS | ネットワーク | IDS + ブロック | 自動ブロック |
+| EDR | エンドポイント | 挙動分析、テレメトリ | 検知 + 自動隔離・調査 |
+| XDR | エンドポイント + ネットワーク + クラウド + メール | EDR の統合・拡張 | 統合的応答 |
+| NDR | ネットワーク | 挙動分析、フロー分析 | 検知 + 応答 |
+
+#### C/C++ アナロジー
+
+- IDS = `tcpdump | grep "悪意パターン"` を24時間自動で回す装置
+- EDR = `auditd` + `inotify` + `ptrace` 相当をホスト常駐させて全イベント記録する Linux サービスのイメージ
+
+#### leveret との関係
+
+leveret は IDS/EDR が出したアラート（JSON）を入力として受け取る側。第1章で出てきた AWS GuardDuty も同系統で、`examples/alert/` の GuardDuty サンプル JSON はこの種のシステムからの入力例。
+
+```
+EDR / IDS → アラート JSON → leveret（LLM で分析サポート）→ アナリスト
+```
 
 ## 第3章 セキュリティアラートの分析業務における課題とLLMによる改善の可能性
 
