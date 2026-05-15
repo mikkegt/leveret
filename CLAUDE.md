@@ -364,3 +364,27 @@ The chat command uses Gemini's Tool Use (Function Calling) pattern:
 5. Repeat until Gemini returns final answer (no more function calls)
 
 This enables Gemini to dynamically call external APIs like threat intelligence services, log databases, etc.
+
+## 勉強スタイル
+
+### 背景
+- Women Who Go Tokyo の読書会「Goで作るセキュリティ分析LLMエージェント」ハンズオン
+- 周回遅れ（他メンバーより数章遅れて進めている）
+- 2週間以上空くことが多いので、いつでも復帰できる記録を残す
+
+### 進め方
+- コードはユーザーが書き、Claude はレビュー・概念説明に徹する
+- Java/C#/TS の経験があるので、Go 特有の概念はアナロジーで説明
+- 章ごとに H2 セクションを切って `docs/note.md` に追記する
+
+### note.md への書き方（最重要）
+- **要約しない。会話をそのまま残す**
+- ユーザーの質問・Claudeの回答を逐語レベルで転記する
+- 「ユーザー:」「Claude:」のラベル、または Q/A 形式でそのまま貼る
+- コードブロック・例・アナロジーも省略せず全部残す
+- 「きれいにまとめる」「整える」をしない。読み返した時に会話が再現できる密度で残す
+
+### 記録の単位
+- 章の要点（「この章で何を作った？なぜ？」）
+- 実装中のQ&A
+- つまずき・誤解のログ（次回の自分へのメモ）
