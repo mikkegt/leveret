@@ -364,7 +364,93 @@ EDR / IDS → アラート JSON → leveret（LLM で分析サポート）→ �
 
 ## 第3章 セキュリティアラートの分析業務における課題とLLMによる改善の可能性
 
-<!-- 未着手 -->
+読み物の章なので要点だけ。
+
+### この章の主張
+
+- アラート分析の課題は **量** + **複雑さ** + **専門知識の不足**
+- 「Alert Fatigue」: SOC アナリストでもアラートの14%しか処理できていない (Palo Alto 調査)
+- SOAR は2018年頃に登場、2024年 Gartner Hype Cycle で「幻滅期」入り → "SOAR is dead" とまで言われる
+- SOAR の限界: 厳密なワークフロー定義のメンテコスト、動的判断ができない
+- LLM が解決しうるもの:
+  - 柔軟なデータ収集（Function Calling で必要なツールを動的選択）
+  - 大量データの要約・解説
+  - 自然言語での指示
+  - コンテキストエンジニアリングで組織固有の文脈を与えられる
+- LLM が苦手なもの:
+  - 大規模データ分析（コンテキストウィンドウの制約、統計的処理は苦手）
+  - 最終的な影響度判断（人間が判断すべき）
+
+---
+
+### CheckPoint / CrowdStrike は SOAR か？
+
+正確には**違う**。これらは SOAR 専業ではなく、本業は別。
+
+| 会社 | 主力製品 | SOAR との関係 |
+|---|---|---|
+| CheckPoint | ファイアウォール、IPS、Sandbox 等の防御製品スイート | Infinity SOC など SOAR 寄りの機能もあるが副次的 |
+| CrowdStrike | Falcon (EDR/XDR の代表格) | Falcon Fusion で SOAR 機能を提供。主力は EDR |
+
+SOAR の代表的な専業（または専業発祥）ベンダー:
+- **Palo Alto XSOAR** — 元 Demisto を買収
+- **Splunk Phantom** — 元 Phantom を買収（その後 Cisco が Splunk を買収）
+- **IBM Resilient** — 元 Resilient Systems を買収
+- **Tines、Torq** — モダンな新興 SOAR
+
+つまり「SOAR は EDR/SIEM ベンダーが買収・統合した機能」になっているケースが多い。CrowdStrike も同じ流れ。
+
+### プラトー期とは
+
+**Gartner Hype Cycle** の5段階の最終フェーズ。
+
+```
+1. Innovation Trigger（黎明期）
+2. Peak of Inflated Expectations（過度な期待のピーク）
+3. Trough of Disillusionment（幻滅期）← 本文で SOAR がここに位置づけられた
+4. Slope of Enlightenment（啓発期）
+5. Plateau of Productivity（プラトー期、生産性の安定期）
+```
+
+プラトー期 = 技術が成熟して実用的に使われるようになるフェーズ。本文の「**プラトー期を迎える前に時代遅れになる**」= 成熟する前に陳腐化、という意味。
+
+### MITRE ATT&CK フレームワーク
+
+- MITRE = 米国の非営利研究機関（CVE データベースも管理）
+- ATT&CK = Adversarial Tactics, Techniques, and Common Knowledge
+
+攻撃者の **Tactics（戦術）** と **Techniques（技術）** を体系的に整理した知識体系。セキュリティ業界の共通言語。
+
+#### 構造
+
+14個の Tactics（攻撃の段階）× 各々の Techniques のマトリクス:
+
+| Tactic（戦術） | 意味 |
+|---|---|
+| Initial Access | 初期侵入 |
+| Execution | 実行 |
+| Persistence | 永続化 |
+| Privilege Escalation | 権限昇格 |
+| Defense Evasion | 防御回避 |
+| Credential Access | 認証情報窃取 |
+| Discovery | 偵察 |
+| Lateral Movement | 横展開 |
+| Collection | 収集 |
+| Command and Control | C2 通信 |
+| Exfiltration | データ持ち出し |
+| Impact | 破壊的影響 |
+| 他に Reconnaissance、Resource Development |  |
+
+各 Tactic の下に Techniques が紐づく。例: `T1059.001` = PowerShell の悪用（Execution カテゴリの一技術）。
+
+#### 何に使うか
+
+- 検知ルール開発: 「うちの監視は ATT&CK のどこをカバーしている？」
+- 脅威モデリング: 攻撃シナリオの整理
+- レッドチーム演習: 攻撃側が ATT&CK のどの Technique を使ったか記録
+- 共通言語: 「これは T1486（Data Encrypted for Impact、ランサムウェア）」と一言で伝わる
+
+本文で「近年のLLMには MITRE ATT&CK のような一般的なセキュリティ知識が組み込まれている」とあるのは、**LLMの学習データに ATT&CK の公開情報が含まれているので、`T1059.001` と言えば LLM が理解できる**ということ。これがセキュリティ専門家不在の組織でも LLM が役立つ理由の一つ。
 
 ## 第4章 システムアーキテクチャと設計方針
 
