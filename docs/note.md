@@ -510,7 +510,81 @@ Repository ( pkg/repository ) / Adapter ( pkg/adapter )
 
 ## 第5章 開発環境の準備と事前実装済みコードの説明
 
-<!-- 未着手 -->
+- [x] エディタ（GoLand）
+- [x] go version go1.26.0 darwin/arm64
+- [x] clone
+- [x] GCP
+  - [x] プロジェクト作成
+  - [x] Firestore 有効化
+  - [x] DB作成
+  - [x] Cloud Storage 有効化
+  - [x] バケット作成
+  - [x] Vertex AI (Gemini) 有効化
+  - [x] gcloudツールのインストールとADCの認証
+  - [x] Budget and Alertsの設定
+
+### ベースコードのレイヤー構成と「配線」
+
+init ブランチには事前実装済みのベースコードが入っていて、3章のレイヤードアーキテクチャ（CLI → UseCase → Repository/Adapter の一方向）がそのまま形になっている。`new` コマンドで main から Firestore 保存まで追うと役割分担が見える。
+
+- main.go: `cli.Run(ctx, os.Args)` を呼ぶだけ。配線はしない
+- pkg/cli/cli.go: `cli.Command` を組み立て、サブコマンド（newCommand() 等）を登録して `cmd.Run()`。あとは urfave/cli ライブラリが argv を見て該当コマンドの Action を呼ぶ
+- pkg/cli/new.go の Action: ここが配線の本体
+- pkg/usecase/alert: ビジネスロジック（受け取った依存を使うだけ）
+
+配線の正体は new.go のこの流れ。部品を作る人（CLI層）と使う人（UseCase）が分離している。
+
+```go
+repo, _   := cfg.newRepository()     // 部品A（repository.Repository 型）
+gemini, _ := cfg.newGemini(ctx)      // 部品B（adapter.Gemini 型）
+uc := alert.New(repo, gemini)        // ← この引数渡しが「依存性注入＝配線」
+uc.Insert(ctx, alertData)            // uc は u.repo を使うだけ。誰が作ったか知らない
+```
+
+`alert.New()` は受け取った repo/gemini を構造体フィールドに保管するだけ。`Insert()` の中には Firestore も cfg も firestoreProject も出てこない。「挿さっているものを使うだけ」というのが、コンストラクタインジェクションそのもの。C++ で言えば new.go が FirestoreRepo を new して、UseCase に基底ポインタ（Repository*）として渡し、UseCase はメンバに保持して使う、の構図。
+
+設定は CLI 層の `config struct`（config.go）に集約。`globalFlags(cfg)` がフラグの `Destination` に `&cfg.firestoreProject` のようにフィールドのアドレスを結びつけ、パース時にそこへ書き込まれる（boost::program_options の `po::value(&var)` に近い）。`func (cfg *config) newRepository()` のように config 自身が部品を作るメソッドを持つので、各コマンドの Action は `cfg.newRepository()` を呼ぶだけで済む。
+
+### 同じパッケージ＝同じディレクトリ
+
+Go は「ディレクトリ＝パッケージ」。pkg/cli/ の中の cli.go / new.go / config.go … は別ファイルでもコンパイラから見れば1つの `cli` パッケージ。だから cli.go から new.go の `newCommand`（小文字＝非公開）を修飾なしでそのまま呼べるし、定義ジャンプも効く。逆に別パッケージのものは `alert.New()` のようにパッケージ名で修飾し、かつ大文字始まり（公開）でないと見えない。
+
+読むときの勘どころ: 修飾が付いていない（`newCommand`, `Run`）＝同じパッケージ。`cli.Command` のように修飾が付く＝import した外部パッケージ。urfave/cli のパッケージ名がたまたま `cli` で、このファイルも `package cli` なので紛らわしいが、自分のパッケージのものは修飾なしで書くルールなので衝突しない。
+
+### インターフェースの腑落ちメモ（C++ のアナロジー）
+
+本物の interface はこのコードでは `cli.Flag` / `repository.Repository` / `adapter.Gemini`。urfave/cli の実物はこうなっていた（flag.go:104）。
+
+```go
+type Flag interface {
+    fmt.Stringer                 // String() string
+    Apply(*flag.FlagSet) error
+    Names() []string
+    IsSet() bool
+}
+```
+
+これは「この4メソッドを全部持つ型は Flag を名乗ってよい」という募集要項。`StringFlag` も `BoolFlag` も4つ揃えているので、`[]cli.Flag` に別々の型を同居させられる。
+
+C++ との対応で整理:
+
+- interface ＝ 抽象基底クラスの「純粋仮想関数だけ・データなし」の極限版。C++ には専用キーワードがないので「純粋仮想だけの abstract class」で書くもの。Java/C# の `interface` と同じ立ち位置
+- `[]cli.Flag{ &StringFlag{}, &BoolFlag{} }` は、C++ の `vector<Flag*>{ new StringFlag, new BoolFlag }` と同じでアップキャスト相当。実行時にどのメソッドが動くかは中身の本当の型で決まる（仮想関数テーブルと同じ）
+- 決定的な違い: Go は継承を宣言しない。StringFlag はコード中に `Flag` の文字を一度も書かないのに、必要なメソッドが揃っているだけで自動的に Flag として通用する（構造的型付け＝ダックタイピング）。C++/Java は `: public Flag` / `implements Flag` と血縁を宣言して初めて仲間になれる（名前的型付け）
+
+なぜ嬉しいか（一番具体的な姿）: 使う側はこう書ける。
+
+```go
+for _, f := range cmd.Flags {  // f は Flag。中身が String か Bool か気にしない
+    f.Apply(flagSet)           // 約束されたメソッドだけ呼ぶ
+}
+```
+
+interface がなければ `if *StringFlag {...} else if *BoolFlag {...}` の分岐が型の数だけ伸びる。interface があると、新しいフラグ型を足してもこのループは1文字も変えなくていい。「使う側が相手の具体型を知らずに、約束されたメソッドだけ呼べる」のが疎結合のうまみ。urfave/cli の作者と無関係に自作した型でも、`Apply`/`Names`/`IsSet`/`String` を実装すれば後付けで `[]cli.Flag` に混ざる。
+
+つまずきログ（次回の自分へ）: ここはまだ7割理解で先に進んだ。実際にコードを書く章（要約生成で Repository をモックに差し替える等）に来たら、「implements を書いていないのに繋がる」を実物で確認すると残りが埋まるはず。
+
+補足: `cli.Flag` は標準ライブラリの `flag` パッケージとは別物。ただし `Apply(*flag.FlagSet)` の `flag.FlagSet` が標準の `flag` なので、urfave/cli は内部で標準 flag の上に作られている、という間接的な関係はある。
 
 ## 第6章 LLM利用の基礎とアラートの説明文の作成
 
