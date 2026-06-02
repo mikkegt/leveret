@@ -594,6 +594,35 @@ interface がなければ `if *StringFlag {...} else if *BoolFlag {...}` の分�
 
 C++ のアナロジーで言うと、戻り値が必ず正しい関数ではなく、たまに失敗する I/O やネットワーク呼び出しに近い。read() が期待したバイト数を返さないことがあるのと同じ感覚で、LLM の戻り値も「検証してリトライする」前提で扱う、という話。
 
+### 実装の流れ（基礎版）
+
+`pkg/usecase/alert/insert.go` に `generateTitle` / `generateDescription` を追加して、`Insert` の段取りに挟み込んだ。Insert は「alert を作る → data を json.Marshal で文字列化 → タイトル・要約を生成（u.gemini に委譲）→ repo.PutAlert で保存」という順。gemini は第5章でやった DI（New() でのコンストラクタ注入）で既に入っているので、Insert からは u.gemini を渡すだけ。
+
+generateTitle 自体は gemini_test.go で書いた GenerateContent 呼び出しとほぼ同じ構造。違いは「引数を具象 *GeminiClient でなく interface の adapter.Gemini で受ける（テストでモック差し替え可能にするため）」「resp から strings.TrimSpace でテキストを取り出して返す」。
+
+実行は `zenv -- go run . new -i examples/alert/guardduty.json`。`Alert created: <id>` が出たら、Insert の中の Gemini 呼び出し2回も PutAlert も全部成功している証拠（途中で失敗したら return nil, err で抜けて created は出ない）。`zenv -- go run . show -i <id>` で中身を確認でき、Title と Description が日本語で入っていた。
+
+### 観察1: LLM の抽出も元データも鵜呑みにできない
+
+GuardDuty サンプルの finding を見ると、`Title` フィールドは「...EC2 instance **i-99999999**」、`InstanceDetails.InstanceId` は「**i-11111111**」で、元データ自体が食い違っている（サンプルの作りが雑）。生成された Description は i-11111111 を採用していた（InstanceId フィールドの方を拾った）。
+
+教訓: 元データが矛盾していることもあるし、LLM がそのどちらを拾うかは制御できない。だから自由形式テキスト（タイトル・要約）はこれでいいが、IOC など「正確さが要る属性値」は別扱いが必要。次章（第7章）で構造化出力として抽出する、という流れにつながる。
+
+### 観察2: 文字数制限は「バイト数」で効く（Go の len()）
+
+プロンプトには「100文字未満」と日本語で書いたが、発展版で入れる検証 `len(title) <= maxLength` の `len()` は **文字数ではなくバイト数** を返す。日本語は UTF-8 で1文字≈3バイトなので、「100文字」のつもりでも約33文字でバイト上限に達する。本文でも「バイト数でカウントされる場合がある」と注意されている箇所。
+
+つまり「LLM への指示（文字数）」と「コード側の検証（バイト数）」の単位がズレている。文字数で測りたいなら：
+
+```go
+import "unicode/utf8"
+
+utf8.RuneCountInString(title) // ルーン（文字）数を数える
+len([]rune(title))            // 同じ。[]rune に変換すると要素数=文字数
+```
+
+`len(title)` はバイト数、`utf8.RuneCountInString(title)` は文字数。C++ で言えば `std::string::size()`（バイト/コードユニット数）と、実際の文字数が UTF-8 だと一致しないのと同じ話。発展版のリトライ機構で `maxLength` と比べるとき、どちらの単位で揃えるか意識する。
+
 ## 第7章 構造化データ出力でIoCなど属性値を抽出する
 
 <!-- 未着手 -->
