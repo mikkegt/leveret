@@ -623,6 +623,59 @@ len([]rune(title))            // 同じ。[]rune に変換すると要素数=文
 
 `len(title)` はバイト数、`utf8.RuneCountInString(title)` は文字数。C++ で言えば `std::string::size()`（バイト/コードユニット数）と、実際の文字数が UTF-8 だと一致しないのと同じ話。発展版のリトライ機構で `maxLength` と比べるとき、どちらの単位で揃えるか意識する。
 
+### 発展版: リトライ機構とプロンプトの外部ファイル化
+
+基礎版は「失敗したら即エラー」だったのを、実用的にするために2つ足す。リトライと、プロンプトのテンプレート管理。
+
+#### リトライ機構（失敗情報を次のリクエストに積む）
+
+肝は「失敗をただ繰り返すのではなく、前回の失敗内容を次のプロンプトに添える」こと。100文字に収まらなかったら、その title と文字数を `failedExamples` に append しておき、次のループでテンプレートの `{{range .FailedExamples}}` がそれを「前回は長すぎた」と描画する。LLM は「じゃあ短くしよう」と修正しやすくなる。初回は `failedExamples` が空なので `{{if .FailedExamples}}` ブロックごと出ない。最大3回試してダメなら error を返す。
+
+このパターン（失敗を次の入力にフィードバックして成功率を上げる）は、後の Function Calling や Plan-Execute でも共通で使えると本文が言っている。
+
+#### //go:embed でプロンプトを外部ファイル化
+
+プロンプトを Go の文字列リテラルで持つとエディタ補助（ハイライト・整形）が効かないので、`prompt/title.md` に出して `//go:embed` でビルド時にバイナリへ焼き込む。
+
+```go
+//go:embed prompt/title.md
+var titlePromptRaw string
+```
+
+- `//go:embed` コメントは変数宣言の直前に密着させる（間に空行 NG）。
+- パスは .go ファイルからの相対。ファイルが無いとビルド失敗（`pattern prompt/title.md: no matching files found`）。実行時エラーじゃなくコンパイル時に気づけるのが利点。
+- title.md を書き換えたら `go run`（再ビルド）で反映される。
+- アナロジー: C++ の `#embed`（C23）や `xxd -i` でファイルをバイナリに同梱するのと同じ。Java の resources をコンパイル時に焼き込む版。
+
+#### text/template の要点
+
+- `{{.MaxLength}}` … Execute に渡したデータの値を差し込む。`.` は「今のデータ」。
+- `{{if}}` `{{range}}` … 条件分岐とループ。Handlebars/Mustache の親戚。
+- `{{-` `-}}` … その側の空白・改行を削る（出力が空行だらけになるのを防ぐ）。
+- `template.Must(template.New("title").Parse(raw))` … パース失敗で panic するラッパー。パッケージ初期化で使い、テンプレが壊れてたら起動時に落とす（リクエスト時まで遅延させない）。
+- 触れるのは**エクスポート済み（大文字始まり）フィールドだけ**。だから `failedExamples` の要素 struct は `Title` / `Length` と大文字。小文字だと `{{.Title}}` が空になる。
+- データは `map[string]any` で渡し、キー名はテンプレートの `{{.MaxLength}}` と完全一致させる。
+
+#### len の単位問題を実装で解消（観察2の続き）
+
+検証を `len(title)` から `utf8.RuneCountInString(title)` に変えて、プロンプトの「文字数」と単位を揃えた。ここで大事なのは **`len()` は対象で意味が変わる** こと:
+
+- `len(title)`（文字列）= バイト数 → RuneCountInString に変える
+- `len(resp.Candidates)`（スライス）= 要素数 → 正しいので変えない
+
+「`len(文字列)` だけ直す、`len(スライス)` は触らない」。C++ の `std::string::size()`（直したい）と `std::vector::size()`（そのまま）の区別と同じ。
+
+#### タイトルの日本語化
+
+title.md の1行目に「日本語で生成してください」を入れるとタイトルが日本語になる。プロンプトの言語が出力の言語を決める。`generateDescription` は別途インラインの日本語プロンプトなので、タイトルと要約でプロンプト管理が分かれている状態（揃えるなら両方テンプレート化する手もある）。
+
+#### つまずきログ（次回の自分へ）
+
+- `//go:embed` の directive を書いたのに title.md を作る前にビルドして `no matching files found`。embed は対象ファイルが先に要る。
+- `go build` は `_test.go` を含まないが、通常ソース（insert.go）は含む。だから前章のテストの typo は build をすり抜けたが、今回の insert.go のエラーは build で出た。テストのコンパイル確認は `go vet` か `go test`。
+- 定数を `titleMaxLength` で定義したのに呼び出しで `maxLength` と書いて `undefined`。引数名（関数内）とパッケージ定数を混同した。
+- 実走2回ともリトライ未発動（短いタイトルで即合格）。機構が動くのを見たいなら `titleMaxLength` を一時的に 20 などに下げて空振り→収束を観察する。
+
 ## 第7章 構造化データ出力でIoCなど属性値を抽出する
 
 <!-- 未着手 -->
