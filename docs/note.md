@@ -604,7 +604,7 @@ generateTitle 自体は gemini_test.go で書いた GenerateContent 呼び出し
 
 ### 観察1: LLM の抽出も元データも鵜呑みにできない
 
-GuardDuty サンプルの finding を見ると、`Title` フィールドは「...EC2 instance **i-99999999**」、`InstanceDetails.InstanceId` は「**i-11111111**」で、元データ自体が食い違っている（サンプルの作りが雑）。生成された Description は i-11111111 を採用していた（InstanceId フィールドの方を拾った）。
+GuardDuty サンプルの finding を見ると、`Title` フィールドは「...EC2 instance **i-99999999**」、`InstanceDetails.InstanceId` は「**i-11111111**」で、元データ自体が食い違っている。生成された Description は i-11111111 を採用していた（InstanceId フィールドの方を拾った）。
 
 教訓: 元データが矛盾していることもあるし、LLM がそのどちらを拾うかは制御できない。だから自由形式テキスト（タイトル・要約）はこれでいいが、IOC など「正確さが要る属性値」は別扱いが必要。次章（第7章）で構造化出力として抽出する、という流れにつながる。
 
