@@ -684,6 +684,38 @@ title.md の1行目に「日本語で生成してください」を入れると�
 
 Gemini APIに genai.GenerateContentConfig を渡す。ResponseMIMEType: "application/json" で応答をJSON形式にさせ、ResponseSchema: &genai.Schema{...} でJSON Schemaライクに出力の型を 制約する。役割分担は、スキーマが「形式の制約」、プロンプトが「意味的な指示」。スキーマで型を縛りつつプロンプトでも何を出してほしいか説明すると精度が上がる。
 
+##### ResponseMIMEType とは（あとで読み返す用に噛み砕く）
+
+ResponseMIMEType は「出力の形式（MIMEタイプ）」を指定するパラメータ。MIMEタイプは HTTP の Content-Type で使うあれ（text/plain, application/json, image/png …）で、中身の「型ラベル」だと思えばいい。`"application/json"` を渡すと「普通の文章じゃなくてJSONで返して」という指示になる。これがないと LLM は `タイトル: EC2が…` みたいな前置き付きの自然文を返すことがあって、json.Unmarshal がコケる。
+
+ただし ResponseMIMEType だけだと「JSONっぽい何か」しか保証されない。キー名が title だったり name だったり、フィールドが増えたり減ったりする。形（スキーマ）までは縛れていない。そこを縛るのが ResponseSchema。
+
+##### ResponseSchema を足すと何がうれしいか
+
+ResponseSchema は「そのJSONの構造（どんなキーがあって、各値が何型で、どれが必須か）」を指定する。うれしさは3つ。
+
+1. キー名・型・必須が安定する。title と description という名前で、両方必ず入った状態で返るのがほぼ保証されるので、json.Unmarshal で alertSummary 構造体に確実にハマる。スキーマなしだと「今日は summary ってキーで返ってきた」みたいなブレが起きうる。
+2. 1回のAPI呼び出しで複数フィールドをまとめて取れる。第6章では generateTitle と generateDescription で2回 Gemini を呼んでいた。スキーマで title と description を1つのオブジェクトとして定義したことで1回の呼び出しで両方返る。呼び出し回数が減る＝レイテンシもコストも減る。
+3. 配列など繰り返し構造も扱える。後半のIoC抽出がこれ。attributes を配列にして、各要素の type を Enum（ip_address, domain, hash …の6種だけ）に制約する。「IPを5個、ドメインを2個」みたいな可変長データも型安全に取れる。Enum で縛ると `IPaddr` みたいな表記揺れも防げる。
+
+C++/Goのアナロジー: ResponseMIMEType だけは「string で何か返ってくる」状態、ResponseSchema を足すと「struct alertSummary の形で返ってくる」と型を約束させる感じ。LLM相手に struct 定義を渡している、と思うと近い。
+
+役割分担をもう一度: ResponseSchema =「title は文字列・必須・最大100文字」という形のルール、プロンプト =「このアラートが何でなぜ重要かを2〜3文で」という中身の指示。両方書くと精度が上がる。スキーマだけだと形は合うが内容が薄い、プロンプトだけだと内容はいいが形がブレる。
+
+##### 他社API（Anthropic / OpenAI）でも同じことができるか
+
+やりたいこと（スキーマで構造を縛る）は3社共通。違うのは「APIの入口」だけ。共通言語は JSON Schema（type / properties / required / enum …）で、これを覚えておけば「どこにこのスキーマを差し込むか」が違うだけと読み替えられる。
+
+| | 形式だけ縛る | スキーマで構造を縛る |
+|---|---|---|
+| Gemini | ResponseMIMEType | + ResponseSchema |
+| OpenAI / Azure | JSON mode (`response_format: json_object`) | Structured Outputs (`json_schema`, strict) |
+| Claude | プレフィル等で代用 | Tool Use の input_schema |
+
+- OpenAI（Azure OpenAIも同じ）が Gemini にいちばん近く、2段階がそのまま存在する。`json_object` が ResponseMIMEType 相当、`json_schema` + `strict: true` が ResponseMIMEType + ResponseSchema 相当。OpenAI の strict はデコード時に「スキーマに必ず一致」を保証する（constrained decoding）。Gemini は「ほぼ守る」だが完全保証ではないので本でも validate() を足していた。仕事の Azure OpenAI でも、モデルとAPIバージョンが対応していれば同じ response_format が使える。
+- Claude は毛色が違う。専用フィールドではなく Tool Use（Function Calling）を流用するのが定番。ツールを定義して input_schema にJSON Schemaを書き、tool_choice で「このツールを必ず呼べ」と強制すると、モデルが返すツールの引数がそのまま欲しい構造化データになる。これは leveret の chat の Tool Call Loop と同じ仕組みを、外部API呼び出しではなく構造化出力のために使っているだけ。Gemini の ResponseSchema と Claude の Tool Use は裏で同じJSON Schema制約を使っている、と思うと繋がる。
+- 注意（2026年6月時点のメモ）: Anthropic は今後より直接的な構造化出力サポートを追加している可能性がある。実装前に公式ドキュメントで確認するのが安全。確実なのは上記の Tool Use 方式。
+
 #### 実装
 - generateTitle + generateDescription → generateSummary に統合
 - 応答はJSON文字列で返ってくるので、`json.Unmarshal([]byte(rawJSON), &summary)` で `alertSummary` 構造体に復元する。
