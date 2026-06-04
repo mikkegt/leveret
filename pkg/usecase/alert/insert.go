@@ -5,7 +5,6 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
-	"fmt"
 	"text/template"
 	"time"
 	"unicode/utf8"
@@ -122,7 +121,6 @@ func generateSummary(ctx context.Context, gemini adapter.Gemini, alertData strin
 		}
 
 		rawJSON := resp.Candidates[0].Content.Parts[0].Text
-		fmt.Printf("[DEBUG] received JSON from Gemini: %s\n", rawJSON)
 
 		var summary alertSummary
 		if err := json.Unmarshal([]byte(rawJSON), &summary); err != nil {
