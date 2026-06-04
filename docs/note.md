@@ -582,7 +582,7 @@ for _, f := range cmd.Flags {  // f は Flag。中身が String か Bool か気�
 
 interface がなければ `if *StringFlag {...} else if *BoolFlag {...}` の分岐が型の数だけ伸びる。interface があると、新しいフラグ型を足してもこのループは1文字も変えなくていい。「使う側が相手の具体型を知らずに、約束されたメソッドだけ呼べる」のが疎結合のうまみ。urfave/cli の作者と無関係に自作した型でも、`Apply`/`Names`/`IsSet`/`String` を実装すれば後付けで `[]cli.Flag` に混ざる。
 
-つまずきログ（次回の自分へ）: ここはまだ7割理解で先に進んだ。実際にコードを書く章（要約生成で Repository をモックに差し替える等）に来たら、「implements を書いていないのに繋がる」を実物で確認すると残りが埋まるはず。
+つまずきログ: ここはまだ7割理解で先に進んだ。実際にコードを書く章（要約生成で Repository をモックに差し替える等）に来たら、「implements を書いていないのに繋がる」を実物で確認すると残りが埋まるはず。
 
 補足: `cli.Flag` は標準ライブラリの `flag` パッケージとは別物。ただし `Apply(*flag.FlagSet)` の `flag.FlagSet` が標準の `flag` なので、urfave/cli は内部で標準 flag の上に作られている、という間接的な関係はある。
 
@@ -669,7 +669,7 @@ var titlePromptRaw string
 
 title.md の1行目に「日本語で生成してください」を入れるとタイトルが日本語になる。プロンプトの言語が出力の言語を決める。`generateDescription` は別途インラインの日本語プロンプトなので、タイトルと要約でプロンプト管理が分かれている状態（揃えるなら両方テンプレート化する手もある）。
 
-#### つまずきログ（次回の自分へ）
+#### つまずきログ
 
 - `//go:embed` の directive を書いたのに title.md を作る前にビルドして `no matching files found`。embed は対象ファイルが先に要る。
 - `go build` は `_test.go` を含まないが、通常ソース（insert.go）は含む。だから前章のテストの typo は build をすり抜けたが、今回の insert.go のエラーは build で出た。テストのコンパイル確認は `go vet` か `go test`。
@@ -678,7 +678,30 @@ title.md の1行目に「日本語で生成してください」を入れると�
 
 ## 第7章 構造化データ出力でIoCなど属性値を抽出する
 
-<!-- 未着手 -->
+### 構造化出力の基本
+
+#### ResponseMIMEType と ResponseSchema
+
+Gemini APIに genai.GenerateContentConfig を渡す。ResponseMIMEType: "application/json" で応答をJSON形式にさせ、ResponseSchema: &genai.Schema{...} でJSON Schemaライクに出力の型を 制約する。役割分担は、スキーマが「形式の制約」、プロンプトが「意味的な指示」。スキーマで型を縛りつつプロンプトでも何を出してほしいか説明すると精度が上がる。
+
+#### 実装
+- generateTitle + generateDescription → generateSummary に統合
+- 応答はJSON文字列で返ってくるので、`json.Unmarshal([]byte(rawJSON), &summary)` で `alertSummary` 構造体に復元する。
+- 検証は `alertSummary.validate()` に集約し、リトライループの中で「Unmarshal → validate → 失敗なら failedExamples に積んで continue」という流れ。
+
+#### つまずきログ
+- `generateTitle` をコピーして作り替える過程で、出口（戻り値）の直し忘れが連鎖した。戻り値を string → `*alertSummary` に変えたら、関数内の `return ""` を全部 `return nil`
+  に直す必要がある。一個直すと次のエラーが出る、の繰り返し。
+- `maxLength` 引数を消したら、本体（テンプレに渡す値）とプロンプトのキー名の両方に波及した。
+- テンプレートのキー不一致。`summary.md` は `{{.MaxTitleLength}}` を使うのに、コードで `MaxTitleLength` を渡し忘れていた。`text/template` は存在しないキーを参照してもエラーにせず `<no value>` を埋めるので、プロンプトに「文字未満で」と出てしまう。コンパイルもvetも通るのに出力だけ変、という見つけにくいバグ。前章の「キー名はテンプレートと完全一致」がここで効いた。
+- `summary.md` を英語のままにしたら出力も英語になった。プロンプトの言語が出力言語を決める（第6章の再確認）。和訳して日本語出力に戻した。
+- DEBUG用に `fmt.Printf` で生JSONを出すと、構造化出力が本当にJSONで返るのが目で見えて理解が進む。確認できたら消す。
+
+#### go vet メモ
+
+`go build` は構文・型チェック、`go vet` はそれに加えて「コンパイルは通るが怪しいコード」も見る静的解析。C++の `clang-tidy` / `-Wall` 的なもの。ただしGoのvetは型チェックも内包するので、構文エラーもvetで出る。
+
+### IoC（IP、ドメイン、ハッシュ）の抽出実装
 
 ## 第8章 会話と履歴の管理
 
