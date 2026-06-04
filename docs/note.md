@@ -763,7 +763,58 @@ C++アナロジー: `pkg/model/` はヘッダで struct だけ定義してる感
 
 ## 第8章 会話と履歴の管理
 
-<!-- 未着手 -->
+### アーキテクチャの呼び方メモ（CLI層 / Adapter層、ヘキサゴナル等）
+
+チャット実装で CLI層 と UseCase層 の分担が出てきたので、ついでに呼び方を整理。
+
+#### CLI層 と Adapter層 は何が違うか
+
+どっちも「アプリと外界の境界」だが、向きが逆。
+
+| | 相手 | 位置 | 役割 |
+|---|---|---|---|
+| CLI層 | 人間 / ターミナル（標準入出力、引数） | 最上流（入口） | アプリを起動する側 |
+| Adapter層 | 外部サービスのAPI（Gemini, Storage） | 最下流（出口） | アプリから呼ばれる側 |
+
+依存フローは `CLI → UseCase → Adapter/Repository`。CLI は部品（repo/gemini/storage）を生成して chat.New に注入する司令塔（DIの場所）。Adapter は UseCase に使われて働く側で、自分からは起動しない。「入ってくるのが CLI、出ていくのが Adapter/Repository」と方向で覚える。Repository も実は Adapter の仲間（外部＝DBへの出口）で、データ永続化専用だから名前を分けてるだけ。
+
+具体例の対比:
+- pkg/cli/chat.go = os.Stdin から読む、`-i` 引数をパース ← 人間との接点
+- pkg/adapter/gemini.go = Gemini API を叩く、genai SDK をラップ ← 外部APIとの接点
+
+対話ループ（入力を繰り返し受ける `for {}`）は cli/chat.go 側にあり、session.go の Send は「1メッセージ→1応答」の1往復だけ担当。ループは CLI、1往復は UseCase。これは REPL（Read-Eval-Print Loop）と同じ構造で、Read=scanner、Eval=Send、Print=Fprintf、Loop=for。Send が入力ループを持たないから、将来 Web から叩くときも Send をそのまま再利用できる（＝外部を差し替え可能にする思想）。
+
+#### 「CLI層」は一般的な呼び方？
+
+`CLI`（Command Line Interface）という言葉自体は一般用語。でも「CLI層」という"層の名前"は標準的なアーキテクチャ用語ではなく、このアプリがCLIツールだから最上位層を具体的にそう呼んでるだけ。一般的なレイヤードアーキテクチャでは、この位置は Presentation層 / Interface層 / Delivery層 / Handler層 などと呼ぶ。Webアプリなら同じ位置が Controller層 / HTTP Handler層。要は「ユーザーとの接点＝プレゼンテーション層」の CLI版の具体名。
+
+#### アーキテクチャの族（呼び方いろいろ）
+
+「ロジックを中心に、外部（DB/UI/API）を周辺に追い出し、依存を内向きにする」という同じ思想に、見た目の違う図がいくつもある。
+
+- ヘキサゴナル（六角形 / Ports and Adapters）: 中心にアプリ本体、外周をポート＆アダプターが囲む。CLI は driving adapter（駆動する側 / primary）、Gemini は driven adapter（駆動される側 / secondary）。六角形に深い意味はなく「複数の入出力を描けるよう多角形にした」だけ。
+- クリーンアーキテクチャ（同心円のドーナツ）: 中心 Entities → Use Cases → Interface Adapters → Frameworks & Drivers。Uncle Bob のあの図。
+- オニオンアーキテクチャ（玉ねぎ）: これも同心円。
+
+3つとも親戚で、核は同じ（依存は一方向＝外側が中心を知る、中心は外側を知らない / 外部は差し替え可能）。図形（六角形・ドーナツ・玉ねぎ）が違うだけ。leveret の `CLI → UseCase → Adapter/Repository` も、この思想の素朴な実装版。形に厳密に当てはめるより「依存が一方向」という中身が大事。
+
+### 構造体タグ `firestore:"-"`（Contents をFirestoreに保存しない）
+
+`pkg/model/history.go` の History 構造体に出てくるやつ:
+
+```go
+type History struct {
+    ID        HistoryID
+    ...
+    Contents []*genai.Content `firestore:"-"`
+}
+```
+
+`firestore:"-"` は「このフィールドは Firestore に保存しない」という指示。構造体タグ（バッククォートのメタ情報）で、ライブラリがリフレクションで読む。json タグ（`json:"title"`）と同じ仕組みで、宛先が firestore というだけ。`-` は「無視」の慣用記号（json でも `json:"-"` で同じ意味）。
+
+なぜ Contents だけ除外するか: 第8章の「会話履歴を2つに分けて管理」の実装ポイント。メタデータ（ID・タイトル・日時など軽量）は Firestore、実データ（Contents＝会話本体でサイズが大きい）は安価な Cloud Storage に JSON で出し入れする。Contents を Firestore から外すこのタグが、その2分割設計の表れ。saveHistory はメタを Firestore・Contents を Storage に分けて書き、loadHistory は両方から読んで History を組み立てる。
+
+C++アナロジー: 構造体タグはGoのリフレクションでメタデータをくっつけられるGo特有の機能で、C++に直の対応はない（あえて言えばシリアライザに渡すマクロやアノテーションの役割）。
 
 ## 第9章 Function Callingによる外部ツール連携
 

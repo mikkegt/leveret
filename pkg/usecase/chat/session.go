@@ -2,7 +2,9 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 
+	"github.com/m-mizutani/goerr/v2"
 	"github.com/m-mizutani/leveret/pkg/adapter"
 	"github.com/m-mizutani/leveret/pkg/model"
 	"github.com/m-mizutani/leveret/pkg/repository"
@@ -29,17 +31,56 @@ type NewInput struct {
 }
 
 func New(ctx context.Context, input NewInput) (*Session, error) {
+	alert, err := input.Repo.GetAlert(ctx, input.AlertID)
+	if err != nil {
+		return nil, goerr.Wrap(err, "failed to get alert")
+	}
+	/* loadHistoryを実装したら、コメントを外す
+	var history *model.History
+	if input.HistoryID != nil {
+		history, err = loadHistory(ctx, input.Repo, input.Storage, *input.HistoryID)
+		if err != nil {
+			return nil, goerr.Wrap(err, "failed to load history")
+		}
+	} else {
+		history = &model.History{}
+	}
+	*/
 	return &Session{
 		repo:    input.Repo,
 		gemini:  input.Gemini,
 		storage: input.Storage,
 		alertID: input.AlertID,
+		alert:   alert,
 		history: &model.History{
-			Contents: []*genai.Content{},
+			// Contents: []*genai.Content{},
 		},
 	}, nil
 }
 
 func (s *Session) Send(ctx context.Context, message string) (*genai.GenerateContentResponse, error) {
-	return nil, nil
+	alertDat, err := json.MarshalIndent(s.alert.Data, "", "  ")
+	if err != nil {
+		return nil, goerr.Wrap(err, "failed to get history from repository")
+	}
+
+	systemPrompt := "You are a helpful assistant that analyzes alerts. The alert data is as follows:\n" + string(alertDat) + "\n"
+
+	userContent := genai.NewContentFromText(message, genai.RoleUser)
+	s.history.Contents = append(s.history.Contents, userContent)
+
+	config := &genai.GenerateContentConfig{
+		SystemInstruction: genai.NewContentFromText(systemPrompt, ""),
+	}
+
+	resp, err := s.gemini.GenerateContent(ctx, s.history.Contents, config)
+	if err != nil {
+		return nil, goerr.Wrap(err, "failed to generate content")
+	}
+
+	if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
+		s.history.Contents = append(s.history.Contents, resp.Candidates[0].Content)
+	}
+
+	return resp, nil
 }
