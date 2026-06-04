@@ -5,6 +5,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"text/template"
 	"time"
 	"unicode/utf8"
@@ -19,8 +20,9 @@ import (
 const maxTitleLength = 100
 
 type alertSummary struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
+	Title       string             `json:"title"`
+	Description string             `json:"description"`
+	Attributes  []*model.Attribute `json:"attributes"`
 }
 
 func (s *alertSummary) validate() error {
@@ -32,6 +34,11 @@ func (s *alertSummary) validate() error {
 	}
 	if s.Description == "" {
 		return goerr.New("description is empty")
+	}
+	for _, attr := range s.Attributes {
+		if err := attr.Validate(); err != nil {
+			return goerr.Wrap(err, "invalid attribute")
+		}
 	}
 	return nil
 }
@@ -57,6 +64,7 @@ func (u *UseCase) Insert(
 	}
 	alert.Title = summary.Title
 	alert.Description = summary.Description
+	alert.Attributes = summary.Attributes
 
 	if err := u.repo.PutAlert(ctx, alert); err != nil {
 		return nil, err
@@ -100,6 +108,29 @@ func generateSummary(ctx context.Context, gemini adapter.Gemini, alertData strin
 						Type:        genai.TypeString,
 						Description: "Detailed description (2-3 sentences) for the alert",
 					},
+					"attributes": {
+						Type:        genai.TypeArray,
+						Description: "Most critical attributes essential for investigation: IOCs and key contextual information only",
+						Items: &genai.Schema{
+							Type: genai.TypeObject,
+							Properties: map[string]*genai.Schema{
+								"key": {
+									Type:        genai.TypeString,
+									Description: "Attribute name in snake_case (e.g., 'source_ip', 'user_name', 'error_count')",
+								},
+								"value": {
+									Type:        genai.TypeString,
+									Description: "Attribute value as a string",
+								},
+								"type": {
+									Type:        genai.TypeString,
+									Description: "Most specific attribute type: 'ip_address', 'domain', 'hash', 'url', 'number', or 'string' for general text",
+									Enum:        []string{"ip_address", "domain", "hash", "url", "number", "string"},
+								},
+							},
+							Required: []string{"key", "value", "type"},
+						},
+					},
 				},
 				Required: []string{"title", "description"},
 			},
@@ -125,6 +156,10 @@ func generateSummary(ctx context.Context, gemini adapter.Gemini, alertData strin
 		var summary alertSummary
 		if err := json.Unmarshal([]byte(rawJSON), &summary); err != nil {
 			return nil, goerr.Wrap(err, "failed to unmarshal summary JSON", goerr.V("text", rawJSON))
+		}
+
+		if prettyJSON, err := json.MarshalIndent(summary, "", "  "); err == nil {
+			fmt.Printf("parsed summary JSON: %s\n", string(prettyJSON))
 		}
 
 		if err := summary.validate(); err != nil {

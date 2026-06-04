@@ -66,3 +66,18 @@ type Attribute struct {
 	Value string
 	Type  AttributeType
 }
+
+func (a *Attribute) Validate() error {
+	if a.Key == "" {
+		return goerr.New("Attribute key is empty")
+	}
+	if a.Value == "" {
+		return goerr.New("Attribute value is empty")
+	}
+	switch a.Type {
+	case AttributeTypeString, AttributeTypeNumber, AttributeTypeIPAddress, AttributeTypeDomain, AttributeTypeHash, AttributeTypeURL:
+		return nil
+	default:
+		return goerr.New("invalid attribute type", goerr.V("type", a.Type))
+	}
+}
