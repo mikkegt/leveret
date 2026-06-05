@@ -8,6 +8,9 @@
 *.so
 *.dylib
 
+# Built binary (go build -o leveret)
+/leveret
+
 # Test binary, built with `go test -c`
 *.test
 

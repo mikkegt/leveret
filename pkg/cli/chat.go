@@ -102,6 +102,10 @@ func chatCommand() *cli.Command {
 				}
 			}
 
+			if err := session.Save(ctx); err != nil {
+				return goerr.Wrap(err, "failed to save history")
+			}
+
 			fmt.Fprintf(c.Root().Writer, "\nChat session completed\n")
 			return nil
 		},

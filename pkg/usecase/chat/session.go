@@ -35,7 +35,7 @@ func New(ctx context.Context, input NewInput) (*Session, error) {
 	if err != nil {
 		return nil, goerr.Wrap(err, "failed to get alert")
 	}
-	/* loadHistoryを実装したら、コメントを外す
+
 	var history *model.History
 	if input.HistoryID != nil {
 		history, err = loadHistory(ctx, input.Repo, input.Storage, *input.HistoryID)
@@ -45,16 +45,14 @@ func New(ctx context.Context, input NewInput) (*Session, error) {
 	} else {
 		history = &model.History{}
 	}
-	*/
+
 	return &Session{
 		repo:    input.Repo,
 		gemini:  input.Gemini,
 		storage: input.Storage,
 		alertID: input.AlertID,
 		alert:   alert,
-		history: &model.History{
-			// Contents: []*genai.Content{},
-		},
+		history: history,
 	}, nil
 }
 
@@ -83,4 +81,8 @@ func (s *Session) Send(ctx context.Context, message string) (*genai.GenerateCont
 	}
 
 	return resp, nil
+}
+
+func (s *Session) Save(ctx context.Context) error {
+	return saveHistory(ctx, s.repo, s.storage, s.alertID, s.history)
 }
