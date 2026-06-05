@@ -57,6 +57,14 @@ func New(ctx context.Context, input NewInput) (*Session, error) {
 }
 
 func (s *Session) Send(ctx context.Context, message string) (*genai.GenerateContentResponse, error) {
+	if len(s.history.Contents) == 0 {
+		title, err := generateTitle(ctx, s.gemini, message)
+		if err != nil {
+			return nil, goerr.Wrap(err, "failed to generate title")
+		}
+		s.history.Title = title
+	}
+
 	alertDat, err := json.MarshalIndent(s.alert.Data, "", "  ")
 	if err != nil {
 		return nil, goerr.Wrap(err, "failed to get history from repository")

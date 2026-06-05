@@ -31,7 +31,7 @@ func TestNewWithDifferentLevels(t *testing.T) {
 		{"warn", false, false, true, true},
 		{"warning", false, false, true, true},
 		{"error", false, false, false, true},
-		{"DEBUG", true, true, true, true}, // Case-insensitive
+		{"DEBUG", true, true, true, true},    // Case-insensitive
 		{"invalid", false, true, true, true}, // Defaults to info
 	}
 

@@ -816,6 +816,50 @@ type History struct {
 
 C++アナロジー: 構造体タグはGoのリフレクションでメタデータをくっつけられるGo特有の機能で、C++に直の対応はない（あえて言えばシリアライザに渡すマクロやアノテーションの役割）。
 
+### この章で作ったもの
+
+第8章で実装したのは大きく4つ。
+
+1. Session.Send — 1メッセージ→1応答の往復。システムプロンプトにアラートJSONを埋め、history に append しながら GenerateContent を呼ぶ
+2. 履歴の永続化（loadHistory / saveHistory） — メタデータは Firestore、Contents（会話本体）は Cloud Storage の `histories/<id>.json` という2分割保存。chat 終了時に `session.Save(ctx)` で書き出し、次回起動時に復元して会話を継続できる
+3. generateTitle — 最初のメッセージから50文字以内のタイトルを LLM に生成させる。`len(s.history.Contents) == 0`（＝初回）のときだけ Send 内で呼ぶ
+4. history コマンド — アラートIDを指定して会話履歴の一覧（ID・日時・タイトル）を表示
+
+### 実装手順（次回の自分へ：迷わない順番）
+
+依存の下流（呼ばれる側）から上流（呼ぶ側）へ実装していく。model → repository/adapter → usecase → cli の順で書けば、常に定義が先・参照が後になり undefined にならない。各ステップの終わりに `go build ./...` を通すこと。
+
+1. **model**: `pkg/model/history.go` に History 構造体（ID, Title, AlertID, CreatedAt, UpdatedAt, Contents）と NewHistoryID() を書く。Contents には `firestore:"-"` を付ける（2分割保存の要）
+2. **Send**: `pkg/usecase/chat/session.go`。New でアラート取得と history の初期化、Send で1往復（システムプロンプト＋history append＋GenerateContent）。→ ここで一度 `chat` コマンドを動かして会話できることを確認
+3. **永続化**: `pkg/usecase/chat/history.go` に loadHistory / saveHistory。loadHistory は Firestore（メタ）と Storage（Contents）の両方から読んで合体、saveHistory は逆に分けて書く。session.go の New に履歴ロード、Save メソッドを追加し、`pkg/cli/chat.go` のループ後に `session.Save(ctx)` を呼ぶ。→ chat を2回起動して会話が続くことを確認
+4. **generateTitle**: `pkg/usecase/chat/title.go`。呼び出し元の Send と同じ chat パッケージに置く（小文字関数はパッケージ内限定なので、cli 側に置くと呼べない）。Send の冒頭で初回のみ呼ぶ
+5. **history コマンド**: ここは3点セットで、この順に。
+   1. `pkg/repository/repository.go` の interface に ListHistoryByAlert を追加（実装するまでコンパイラが「Firestore does not implement Repository」で教えてくれるガードになる）
+   2. `pkg/repository/firestore.go` に実装（Where + OrderBy のクエリ）
+   3. `pkg/cli/history.go` に historyCommand を作り、**最後に** `pkg/cli/cli.go` の Commands に登録。登録を先にやると undefined: historyCommand になる（今回やらかした）
+
+   → `zenv -- go run . history -i <alert-id>` で一覧が出れば完了
+
+### Firestore クエリのメソッドチェーン
+
+history 一覧の取得（`pkg/repository/firestore.go` の ListHistoryByAlert）はこう書く:
+
+```go
+query := client.Collection(historyCollection).
+    Where("AlertID", "==", alertID).
+    OrderBy("CreatedAt", firestore.Desc)
+```
+
+- メソッドチェーンでクエリを組み立てる（SQLでいう `WHERE AlertID = ? ORDER BY CreatedAt DESC`）
+- 構造体タグを付けていないフィールドは、フィールド名がそのまま Firestore 上のキーになる（だから `"AlertID"` と大文字で書く）
+- Where + OrderBy の組み合わせは複合インデックスを要求されることがある。実行時エラーのメッセージにインデックス作成URLが入っているので、それを開いて作ればよい
+
+### つまずきログ
+
+- `declared and not used: history` — Go はローカル変数の未使用をコンパイルエラーにする。一方、パッケージレベルの関数は未使用でも通るので「書いたのに配線してない」ことに気づきにくい（generateTitle がまさにそれだった）
+- `Firestore does not implement Repository (missing ListHistoryByAlert)` — interface のメソッドと実装側の名前・引数が完全一致して初めて満たされる。implements キーワードが無い構造的型付けの裏返しで、ズレるとこのエラーになる
+- `undefined: historyCommand` — cli.go への登録（呼ぶ側）を先にやって、定義ファイル（pkg/cli/history.go）を作っていなかった。手順を飛ばすと未定義参照
+
 ## 第9章 Function Callingによる外部ツール連携
 
 <!-- 未着手 -->

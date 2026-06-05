@@ -190,3 +190,36 @@ func (r *Firestore) ListHistory(ctx context.Context, offset, limit int) ([]*mode
 
 	return histories, nil
 }
+
+func (r *Firestore) ListHistoryByAlert(ctx context.Context, alertID model.AlertID) ([]*model.History, error) {
+	client, err := r.getClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	query := client.Collection(historyCollection).
+		Where("AlertID", "==", alertID).
+		OrderBy("CreatedAt", firestore.Desc)
+
+	iter := query.Documents(ctx)
+	defer iter.Stop()
+
+	var histories []*model.History
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, goerr.Wrap(err, "failed to iterate histories")
+		}
+
+		var history model.History
+		if err := doc.DataTo(&history); err != nil {
+			return nil, goerr.Wrap(err, "failed to parse history data", goerr.Value("id", doc.Ref.ID))
+		}
+		histories = append(histories, &history)
+	}
+
+	return histories, nil
+}
