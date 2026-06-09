@@ -961,6 +961,29 @@ Anthropic SDK でも同じ概念
 - Claude の応答も content ブロックの配列で、その中に type: "tool_use" のブロックが混じる
 - SDKごとにメソッド名や構造は違うけど、「応答の中からツール呼び出しの部品を取り出す」という発想は共通
 
+### 本と変えた点（Tool Call ループでのモデルターンの履歴記録）
+
+Tool Call ループの実装で、書籍のコード例とは少し違う書きにした。
+
+変えた点: モデルの応答（`resp.Candidates[0].Content`）を `s.history.Contents` に append する処理を、ループ内で `resp` を受け取った直後（FunctionCall の有無を判定する前）に置いた。これにより最終回答のターンだけでなく関数呼び出しを要求したターンも履歴に積むようにした。
+
+```go
+finalResp = resp
+
+// 関数呼び出しの有無に関わらず、モデルのターンを履歴に積む
+if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
+    s.history.Contents = append(s.history.Contents, resp.Candidates[0].Content)
+}
+
+funcCalls := resp.FunctionCalls()
+```
+
+こうすると会話履歴が「モデルのfunction_call → そのfunction_response」のペアで揃う。関数呼び出しのターンを履歴に残さないと、次のリクエストで送る履歴に「結果（function_response）」だけがあって「誰が呼んだか（function_call）」が無い状態になりうる。ペアで揃えておくほうが履歴として一貫する、と考えてこの位置にした。
+
+あと、関数呼び出しの有無判定に、自作ヘルパーではなく genai 標準の `resp.FunctionCalls()`（空スライスなら呼び出し無し）をそのまま使った。ヘルパーを足さずに済むぶんシンプル。
+
+どちらも動作は確認済み。書籍の意図と異なる可能性はある。
+
 ## 第10章 シンプルなツールの実装：脅威インテリジェンスツール
 
 <!-- 未着手 -->

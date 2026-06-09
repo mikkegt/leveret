@@ -101,6 +101,10 @@ func (s *Session) Send(ctx context.Context, message string) (*genai.GenerateCont
 		}
 		finalResp = resp
 
+		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
+			s.history.Contents = append(s.history.Contents, resp.Candidates[0].Content)
+		}
+
 		funcCalls := resp.FunctionCalls()
 		if len(funcCalls) == 0 {
 			break
