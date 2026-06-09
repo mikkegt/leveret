@@ -90,14 +90,19 @@ func chatCommand() *cli.Command {
 
 				// Display response
 				if response != nil {
+					printed := false
 					for _, candidate := range response.Candidates {
 						if candidate.Content != nil {
 							for _, part := range candidate.Content.Parts {
 								if text := part.Text; text != "" {
 									fmt.Fprintf(c.Root().Writer, "%s\n", text)
+									printed = true
 								}
 							}
 						}
+					}
+					if !printed {
+						fmt.Fprintf(c.Root().Writer, "(応答がありませんでした。もう一度試すか、質問を変えてください)\n")
 					}
 				}
 			}

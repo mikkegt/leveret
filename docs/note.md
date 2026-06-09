@@ -938,10 +938,28 @@ LLMが渡す: value="5", value_type="number"
 Firestoreに渡す: converted=5.0（float64）
 ```
 
+#### Gemini の応答構造
+
+`resp.FunctionCalls`
+
+```
+resp
+ └ Candidates[0]
+     └ Content
+         └ Parts[]   ← この中に Text だったり FunctionCall だったりが混在
+```
+- LLMが「search_alerts 呼んで」と注文するとき、その注文は Parts の中の FunctionCall という部品として入ってくる
+- FunctionCalls() は、この入れ子を全部たどって FunctionCall だけを拾い集めてくれるショートカット
+- SDKが用意した「よく使う取り出し方
+- 
 ### つまずきログ
 
 - JSONの数値は `map[string]any` だと `float64` にデコードされる。`args["limit"].(int)` はパニックする → `args["limit"].(float64)` で受けて `int(v)` に変換
 - オプション引数（Requiredに無い value_type/limit/offset）はLLMが省略すると nil。`.(string)` で即パニック → カンマok（`v, ok := args[...].(string)`）で受けてデフォルト値を入れる
+
+Anthropic SDK でも同じ概念
+- Claude の応答も content ブロックの配列で、その中に type: "tool_use" のブロックが混じる
+- SDKごとにメソッド名や構造は違うけど、「応答の中からツール呼び出しの部品を取り出す」という発想は共通
 
 ## 第10章 シンプルなツールの実装：脅威インテリジェンスツール
 
