@@ -116,6 +116,41 @@ func (r *Firestore) ListAlerts(ctx context.Context, offset, limit int) ([]*model
 	return alerts, nil
 }
 
+func (r *Firestore) SearchAlerts(ctx context.Context, field, operator string, value any, limit, offset int) ([]*model.Alert, error) {
+	client, err := r.getClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	query := client.Collection(alertCollection).
+		Where("Data."+field, operator, value).
+		OrderBy("CreatedAt", firestore.Desc).
+		Offset(offset).
+		Limit(limit)
+
+	iter := query.Documents(ctx)
+	defer iter.Stop()
+
+	var alerts []*model.Alert
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, goerr.Wrap(err, "failed to iterate alerts")
+		}
+
+		var alert model.Alert
+		if err := doc.DataTo(&alert); err != nil {
+			return nil, goerr.Wrap(err, "failed to parse alert data", goerr.Value("id", doc.Ref.ID))
+		}
+		alerts = append(alerts, &alert)
+	}
+
+	return alerts, nil
+}
+
 func (r *Firestore) SearchSimilarAlerts(ctx context.Context, embedding []float64, limit int) ([]*model.Alert, error) {
 	// TODO: Implement Firestore vector search
 	return nil, nil

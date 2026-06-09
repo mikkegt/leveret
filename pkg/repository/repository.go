@@ -30,4 +30,6 @@ type Repository interface {
 	ListHistory(ctx context.Context, offset, limit int) ([]*model.History, error)
 
 	ListHistoryByAlert(ctx context.Context, alertID model.AlertID) ([]*model.History, error)
+
+	SearchAlerts(ctx context.Context, field, operator string, value any, limit, offset int) ([]*model.Alert, error)
 }

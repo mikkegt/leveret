@@ -862,7 +862,86 @@ query := client.Collection(historyCollection).
 
 ## 第9章 Function Callingによる外部ツール連携
 
-<!-- 未着手 -->
+### Function Calling とは何か（森から見る）
+
+コードが細かくて木を見て森を見ず状態になったので、おおきく読み解く。Function Calling は「LLMに外部の道具を使わせる仕組み」。LLM自身はDB検索もAPI呼び出しもできない。検索したいときは「検索して」と注文するだけで、実際に手を動かすのはこっちのGoコード。
+
+レストランで例える。
+
+- ウェイター = `session.go`（LLMとキッチンの間を往復する）
+- お客さん = LLM（注文するだけ。自分で料理しない）
+- メニュー = `FunctionDeclaration`（何が注文できるか書いてある）
+- キッチン = `Run` / `repo.SearchAlerts`（実際に検索する）
+
+コードの大半（型アサーション、value変換、文字列整形）は「キッチンの調理手順」で、Function Calling の本質ではない。本質は2つだけ：(1) メニュー（FunctionDeclaration）でLLMに道具を説明する、(2) session.goのループでLLMの注文を受けて実行し結果を戻す。木に見えてた部分はほぼ調理手順だった。
+
+### struct は interface の「本体」ではない（is-a と has-a）
+
+```go
+type SearchAlerts struct {
+    repo repository.Repository
+}
+```
+
+最初「SearchAlerts は interface の本体か？」と勘違いしたが逆だった。`SearchAlerts` は `repository.Repository` を実装しているのではなく、interface型のフィールドを1個持っているだけ。interfaceの本体（実装）は `Firestore` のほう（firestore.goで全メソッドを実装している）。
+
+C++で書くと
+
+```cpp
+// 本体（is-a）: Firestore は Repository を実装
+class Firestore : public Repository { ... };
+
+// SearchAlerts は Repository を「持つ」（has-a）
+class SearchAlerts {
+  Repository* repo;   // ポインタで1個持つ
+};
+```
+
+`Firestore` = is-a（インターフェイスを継承＝実装）、`SearchAlerts` = has-a（部品として持つ＝composition）。`repo` には実行時に Firestore のインスタンスが注入されて入る（`NewSearchAlerts(repo)` で渡したやつ）。
+
+### 検索の引数（field/value等）を入れる構造体は無い
+
+「field や value を入れる型定義はどこ？」と探したが、どこにも無い。`SearchAlerts` 構造体が持つのは `repo` 1個だけ。field/operator/value は構造体に入らず、`Run` が呼ばれたときに `args map[string]any` という形で引数として渡ってきて、ローカル変数に取り出すだけ。LLMが投げてきたJSONをその場でほぐしている。
+
+なぜ構造体にしないか＝寿命が違うから。`repo` は最初に1回注入したらずっと同じ（→構造体に持つ）。field/value は呼び出しごとに変わる（→引数で受ける）。寿命が違うものは置き場所を分ける。
+
+### ながれ
+
+1. Function Calling で使う道具（ツール）を作る — `pkg/tool/alert/search.go`
+   - `(s *SearchAlerts) FunctionDeclaration() *genai.FunctionDeclaration`
+   - LLMにどんな引数を取るか伝える「メニュー」を書く。field/operator/value/value_type/limit/offset を Properties に宣言する
+     ```go
+     Properties: map[string]*genai.Schema{
+         "field": {...},      // ← これらが引数の説明（メニューの項目）
+         "operator": {...},
+         "value": {...},
+         "value_type": {...},
+         ...
+     }
+     ```
+2. `session.go` が FunctionDeclaration（メニュー）を LLM に渡す
+3. LLMが「search_alerts を field=Type, value=... で呼んで」と注文（function call）
+4. `session.go` が注文から関数名と引数を抜き出し、`args` にして `Run` を呼ぶ
+5. `Run` が実行する — `pkg/tool/alert/search.go`
+   - `(s *SearchAlerts) Run(ctx, args map[string]any) (string, error)`
+   - args をほぐす → value_type で value を変換（"5"→5.0 等）→ `repo.SearchAlerts(ctx, field, operator, converted, limit, offset)` で検索 → 結果を strings.Builder で整形
+   - **Run の戻り値は整形後の string**。`alerts, err := s.repo.SearchAlerts(...)` は途中処理で、最終的に返すのは "Found 2 alert(s):..." という文字列
+6. `session.go` が結果（string）を LLM に戻す → LLM が日本語で最終回答
+
+### value_type は Firestore に渡らない
+
+引っかかったポイント。Firestore の `SearchAlerts(ctx, field, operator string, value any, limit, offset int)` には `value_type` が無い。`value_type` は Run の中で `value`（常に文字列で届く）を本来の型に変換するためだけに使い、変換が終わったら役目終了。Firestore には変換後の `converted` だけ渡る。だから `value_type` はメニュー（FunctionDeclaration）と Run にしか登場しない。
+
+```
+LLMが渡す: value="5", value_type="number"
+   ↓ Run の中で変換
+Firestoreに渡す: converted=5.0（float64）
+```
+
+### つまずきログ
+
+- JSONの数値は `map[string]any` だと `float64` にデコードされる。`args["limit"].(int)` はパニックする → `args["limit"].(float64)` で受けて `int(v)` に変換
+- オプション引数（Requiredに無い value_type/limit/offset）はLLMが省略すると nil。`.(string)` で即パニック → カンマok（`v, ok := args[...].(string)`）で受けてデフォルト値を入れる
 
 ## 第10章 シンプルなツールの実装：脅威インテリジェンスツール
 
