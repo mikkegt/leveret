@@ -10,18 +10,18 @@ import (
 	"github.com/m-mizutani/leveret/pkg/repository"
 	"google.golang.org/genai"
 
-	alerttool "github.com/m-mizutani/leveret/pkg/tool/alert"
+	"github.com/m-mizutani/leveret/pkg/tool"
 )
 
 // Session manages an interactive chat session for alert analysis
 type Session struct {
-	repo         repository.Repository
-	gemini       adapter.Gemini
-	storage      adapter.Storage
-	alertID      model.AlertID
-	alert        *model.Alert
-	history      *model.History
-	searchAlerts *alerttool.SearchAlerts
+	repo     repository.Repository
+	gemini   adapter.Gemini
+	storage  adapter.Storage
+	alertID  model.AlertID
+	alert    *model.Alert
+	history  *model.History
+	registry *tool.Registry
 }
 
 // NewInput contains parameters for creating a new chat session
@@ -30,7 +30,8 @@ type NewInput struct {
 	Gemini    adapter.Gemini
 	Storage   adapter.Storage
 	AlertID   model.AlertID
-	HistoryID *model.HistoryID // Optional: specify to continue existing conversation
+	HistoryID *model.HistoryID
+	Registry  *tool.Registry
 }
 
 func New(ctx context.Context, input NewInput) (*Session, error) {
@@ -50,13 +51,13 @@ func New(ctx context.Context, input NewInput) (*Session, error) {
 	}
 
 	return &Session{
-		repo:         input.Repo,
-		gemini:       input.Gemini,
-		storage:      input.Storage,
-		alertID:      input.AlertID,
-		alert:        alert,
-		history:      history,
-		searchAlerts: alerttool.NewSearchAlerts(input.Repo),
+		repo:     input.Repo,
+		gemini:   input.Gemini,
+		storage:  input.Storage,
+		alertID:  input.AlertID,
+		alert:    alert,
+		history:  history,
+		registry: input.Registry,
 	}, nil
 }
 
@@ -76,6 +77,12 @@ func (s *Session) Send(ctx context.Context, message string) (*genai.GenerateCont
 
 	systemPrompt := "You are a helpful assistant that analyzes alerts. The alert data is as follows:\n" + string(alertDat) + "\n"
 
+	if s.registry != nil {
+		if toolPrompts := s.registry.Prompts(ctx); toolPrompts != "" {
+			systemPrompt += "\n\n" + toolPrompts
+		}
+	}
+
 	userContent := genai.NewContentFromText(message, genai.RoleUser)
 	s.history.Contents = append(s.history.Contents, userContent)
 
@@ -83,12 +90,8 @@ func (s *Session) Send(ctx context.Context, message string) (*genai.GenerateCont
 		SystemInstruction: genai.NewContentFromText(systemPrompt, ""),
 	}
 
-	if s.searchAlerts != nil {
-		config.Tools = []*genai.Tool{{
-			FunctionDeclarations: []*genai.FunctionDeclaration{
-				s.searchAlerts.FunctionDeclaration(),
-			},
-		}}
+	if s.registry != nil {
+		config.Tools = s.registry.Specs()
 	}
 
 	const maxIterations = 10
@@ -111,14 +114,12 @@ func (s *Session) Send(ctx context.Context, message string) (*genai.GenerateCont
 		}
 
 		for _, funcCall := range funcCalls {
-			result, err := s.executeTool(ctx, funcCall)
+			funcResp, err := s.registry.Execute(ctx, *funcCall)
 			if err != nil {
-				result = "Error: " + err.Error()
-			}
-
-			funcResp := &genai.FunctionResponse{
-				Name:     funcCall.Name,
-				Response: map[string]any{"result": result},
+				funcResp = &genai.FunctionResponse{
+					Name:     funcCall.Name,
+					Response: map[string]any{"error": err.Error()},
+				}
 			}
 			funcRespContent := &genai.Content{
 				Role:  genai.RoleUser,
@@ -129,15 +130,6 @@ func (s *Session) Send(ctx context.Context, message string) (*genai.GenerateCont
 	}
 
 	return finalResp, nil
-}
-
-func (s *Session) executeTool(ctx context.Context, funcCall *genai.FunctionCall) (string, error) {
-	switch funcCall.Name {
-	case "search_alerts":
-		return s.searchAlerts.Run(ctx, funcCall.Args)
-	default:
-		return "", goerr.New("unknown tool", goerr.Value("name", funcCall.Name))
-	}
 }
 
 func (s *Session) Save(ctx context.Context) error {

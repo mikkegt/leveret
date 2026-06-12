@@ -8,14 +8,21 @@ import (
 
 	"github.com/m-mizutani/goerr/v2"
 	"github.com/m-mizutani/leveret/pkg/model"
+	"github.com/m-mizutani/leveret/pkg/tool"
 	"github.com/m-mizutani/leveret/pkg/usecase/chat"
 	"github.com/urfave/cli/v3"
+
+	"github.com/m-mizutani/leveret/pkg/tool/alert"
 )
 
 func chatCommand() *cli.Command {
 	var (
 		cfg     config
 		alertID model.AlertID
+	)
+
+	registry := tool.NewRegistry(
+		alert.NewSearchAlerts(),
 	)
 
 	flags := []cli.Flag{
@@ -30,6 +37,7 @@ func chatCommand() *cli.Command {
 	}
 	flags = append(flags, globalFlags(&cfg)...)
 	flags = append(flags, llmFlags(&cfg)...)
+	flags = append(flags, registry.Flags()...)
 
 	return &cli.Command{
 		Name:  "chat",
@@ -52,12 +60,21 @@ func chatCommand() *cli.Command {
 				return err
 			}
 
-			// Create chat session
-			session, err := chat.New(ctx, chat.NewInput{
+			if err := registry.Init(ctx, &tool.Client{
 				Repo:    repo,
 				Gemini:  gemini,
 				Storage: storage,
-				AlertID: alertID,
+			}); err != nil {
+				return goerr.Wrap(err, "failed to initialize tools")
+			}
+
+			// Create chat session
+			session, err := chat.New(ctx, chat.NewInput{
+				Repo:     repo,
+				Gemini:   gemini,
+				Storage:  storage,
+				AlertID:  alertID,
+				Registry: registry,
 			})
 			if err != nil {
 				return goerr.Wrap(err, "failed to create chat session")
