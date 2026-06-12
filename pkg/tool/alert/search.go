@@ -8,6 +8,8 @@ import (
 
 	"github.com/m-mizutani/goerr/v2"
 	"github.com/m-mizutani/leveret/pkg/repository"
+	"github.com/m-mizutani/leveret/pkg/tool"
+	"github.com/urfave/cli/v3"
 	"google.golang.org/genai"
 )
 
@@ -15,13 +17,30 @@ type SearchAlerts struct {
 	repo repository.Repository
 }
 
-func NewSearchAlerts(repo repository.Repository) *SearchAlerts {
-	return &SearchAlerts{
-		repo: repo,
+func NewSearchAlerts() *SearchAlerts {
+	return &SearchAlerts{}
+}
+
+func (s *SearchAlerts) Init(ctx context.Context, client *tool.Client) (bool, error) {
+	s.repo = client.Repo
+	return true, nil
+}
+
+func (s *SearchAlerts) Flags() []cli.Flag {
+	return nil
+}
+
+func (s *SearchAlerts) Prompt(ctx context.Context) string {
+	return ""
+}
+
+func (s *SearchAlerts) Spec() *genai.Tool {
+	return &genai.Tool{
+		FunctionDeclarations: []*genai.FunctionDeclaration{s.functionDeclaration()},
 	}
 }
 
-func (s *SearchAlerts) FunctionDeclaration() *genai.FunctionDeclaration {
+func (s *SearchAlerts) functionDeclaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{
 		Name:        "search_alerts",
 		Description: `Search alerts by querying fields in the original alert data. Field paths are automatically prefixed with "Data."`,
@@ -60,7 +79,8 @@ func (s *SearchAlerts) FunctionDeclaration() *genai.FunctionDeclaration {
 	}
 }
 
-func (s *SearchAlerts) Run(ctx context.Context, args map[string]any) (string, error) {
+func (s *SearchAlerts) Execute(ctx context.Context, fc genai.FunctionCall) (*genai.FunctionResponse, error) {
+	args := fc.Args
 	field := args["field"].(string)
 	operator := args["operator"].(string)
 	value := args["value"].(string)
@@ -88,10 +108,13 @@ func (s *SearchAlerts) Run(ctx context.Context, args map[string]any) (string, er
 		converted, err = strconv.ParseBool(value)
 	}
 	if err != nil {
-		return "", goerr.Wrap(err, "failed to parse value")
+		return nil, goerr.Wrap(err, "failed to parse value")
 	}
 
 	alerts, err := s.repo.SearchAlerts(ctx, field, operator, converted, limit, offset)
+	if err != nil {
+		return nil, goerr.Wrap(err, "failed to search alerts")
+	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Found %d alert(s):\n\n", len(alerts))
@@ -103,6 +126,8 @@ func (s *SearchAlerts) Run(ctx context.Context, args map[string]any) (string, er
 		fmt.Fprintf(&b, "   Description: %s\n\n", alert.Description)
 	}
 
-	return b.String(), nil
-
+	return &genai.FunctionResponse{
+		Name:     fc.Name,
+		Response: map[string]any{"result": b.String()},
+	}, nil
 }
