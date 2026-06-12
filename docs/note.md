@@ -986,7 +986,105 @@ funcCalls := resp.FunctionCalls()
 
 ## 第10章 シンプルなツールの実装：脅威インテリジェンスツール
 
-<!-- 未着手 -->
+この章でやったのは、9章で作った単発の `search_alerts` を、複数ツールを統一的に扱う仕組みに作り変えること。`Tool` interface を定義し、それを束ねる `Registry` を用意し、その上に脅威インテリジェンス（AlienVault OTX）ツールを足す。新概念というより、9章の interface / アップキャスト / 構造的型付けの話（→ 第9章「interface は契約」）の再適用が中心だった。
+
+### 封印インターフェース：小文字メソッドが1つでもあると外部から実装できない
+
+最初 `Tool` interface のメソッドを小文字で書いてハマった。
+
+```go
+type Tool interface {
+	Flags() []cli.Flag
+	init(ctx context.Context, client *Client) (bool, error)  // ← これ
+	spec() *genai.Tool
+	Prompt(ctx context.Context) string
+	Execute(...) (*genai.FunctionResponse, error)
+}
+```
+
+Goでは、**interface に非公開（小文字）メソッドが1つでも混じっていると、そのinterfaceを実装できるのは「同じパッケージ内の型」だけ**になる。全部小文字である必要はない。1個でも小文字があれば、その時点で封印がかかる。
+
+理由：interfaceを満たすには、実装側の型がメソッドを全部持っていないといけない。でも小文字 `init` は `tool` パッケージに属する識別子で、外部パッケージ（`pkg/tool/alert` や `pkg/tool/otx`）からは同じ名前のメソッドを「`tool` パッケージのものとして」宣言できない。だから外部の型は `init` を満たせず、永遠に `Tool` になれない。
+
+実際 `SearchAlerts` は `pkg/tool/alert` パッケージにあるので、小文字のままだとコンパイルエラーになる。`Init` / `Spec` を大文字にして解決。本が最初から大文字にしている理由はこれだった。
+
+これは事故ではなく、わざと使うこともある。標準ライブラリの `testing.TB`（`*testing.T` と `*testing.B` の共通interface）は、非公開メソッド `private()` をわざと持たせて、**ユーザーが勝手に自作の TB を作れないように封印**している。「このinterfaceを実装していいのはこのパッケージの中の型だけ」という意思表示。今回は逆に「外部に実装してほしい」ので、封印を解く＝大文字にする、が正解。
+
+> C++ アナロジー：sealed / final に近い意図。private な純粋仮想関数を friend 経由でしか override させない passkey idiom が一番近い。「派生してよい相手を限定する」仕掛け。
+
+このプロジェクトの CLAUDE.md は「デフォルト非公開」方針だが、ここはクロスパッケージ実装のために公開が本当に必要なケースなので例外。
+
+### Registry パターン
+
+`Registry` は GoF 23パターンには無いが、Fowler の PoEAA に Registry として載っている名前付きパターン。「共通のオブジェクトを見つける入口役」。今回の実体は、プラグイン登録（ツールを後から差し替え・追加できる）＋ルックアップテーブル（`map[string]Tool` で関数名→ツールを引く）の合わせ技。
+
+```go
+type Registry struct {
+	tools     map[string]Tool      // 関数名 → ツール（実行時の振り分け用）
+	allTools  []Tool               // 登録された全ツール（Init前の一時保管）
+	toolSpecs map[*genai.Tool]bool // 登録済みSpecの集合
+}
+```
+
+`New`（コンストラクタ）の時点ではまだCLIから設定値が来ていないので、ツールは受け取るだけ。実際の有効化は `Init` で行う、という二段構え。`Init` の中で各ツールの `t.Init(ctx, client)` を呼ぶが、これは Registry の Init とは別物（レシーバが `r` と `t` で違う＝再帰ではない。`t` は interface なので dynamic dispatch で各ツールの実装に飛ぶ）。
+
+`Init` の肝は **関数名の重複チェック**。複数ツールが同じ関数名を定義すると、LLMがどっちを呼ぶべきか判断できなくなる。個々のツールは他のツールの存在を知らないので、Registry が責任を持って弾く。
+
+```go
+if existing, exists := r.tools[fd.Name]; exists {
+	if existing != t {              // 別のツールが同じ名前 → アウト
+		return goerr.New("duplicate function name", ...)
+	}
+	continue                        // 同じツールなら登録済みなのでスキップ
+}
+r.tools[fd.Name] = t
+```
+
+`existing != t` はポインタ比較。「すでに登録済みの名前が、いま登録しようとしているのと同じツールか？」を見ている。1つのツールが複数の FunctionDeclaration を持つ場合に、自分自身との衝突を誤検知しないためのガード。
+
+### 旧 search.go（FunctionDeclaration / Run）から新 interface への移行
+
+9章の `SearchAlerts` は `Tool` interface を満たしていなかった。メソッドの形が違う。
+
+| 旧（9章） | 新（10章 Tool interface） |
+|---|---|
+| `FunctionDeclaration() *genai.FunctionDeclaration` | `Spec() *genai.Tool` |
+| `Run(ctx, args map[string]any) (string, error)` | `Execute(ctx, fc genai.FunctionCall) (*genai.FunctionResponse, error)` |
+| （なし） | `Flags() []cli.Flag` |
+| （なし） | `Init(ctx, *Client) (bool, error)` |
+| （なし） | `Prompt(ctx) string` |
+
+移行のポイント：
+
+- Spec：旧 `FunctionDeclaration` が返していた単体の `*genai.FunctionDeclaration` を、`&genai.Tool{FunctionDeclarations: []*genai.FunctionDeclaration{...}}` で包む。`genai.Tool` は複数の宣言を持てる入れ物。
+- Execute：引数が `map[string]any` から `fc.Args`（= `fc.Args` が同じ `map[string]any`）に変わる。返り値も `string` ではなく `&genai.FunctionResponse{Name: fc.Name, Response: map[string]any{"result": str}}` で包んで返す。中身（型アサーションやFirestore検索）はそのまま使い回せる。
+- 依存の受け取り場所が変わる：旧 `NewSearchAlerts(repo)` はコンストラクタで repo を受けていた。新パターンでは `New()` は引数なしにして、repo は `Init(ctx, client *Client)` の `client.Repo` から受け取る。設定（APIキーやrepo）の注入タイミングが「生成時」から「Init時」にずれるのがRegistryパターンとTwelve-Factor的な設計の帰結。本の chat.go が `alert.NewSearchAlerts()`（引数なし）になっているのはこのため。
+- 追加メソッド：`search_alerts` は設定値が要らないので `Flags()` は `nil`、`Prompt()` は空文字、`Init()` は `client.Repo` を保持して `return true, nil` でよい。
+
+### Registry の一生（chat コマンドの流れ）
+
+メソッドが呼ばれる順番と役割を時系列で整理する。きもは「**②③の2段階**」。NewRegistry直後はツールが箱に並んでいるだけで設定値（APIキー等）はまだ無い。間にCLIパースが入って各ツールに設定が注入され、Initで初めて「使える/使えない」を判定して有効なものだけ `r.tools` 台帳に登録する。だから `allTools`（全部の入れ物）と `tools`（有効なものだけの名前引き台帳）の2フィールドがある。
+
+```mermaid
+flowchart TD
+    A["① NewRegistry(tool1, tool2, ...)<br/>allTools にツールを並べるだけ<br/>まだ何も初期化されない"]
+    B["② registry.Flags()<br/>全ツールのCLIフラグを集めてCLIに登録"]
+    C{{"CLI パース<br/>--otx-api-key 等の値が各ツールに注入される"}}
+    D["③ registry.Init(ctx, client)<br/>各ツールの Init を呼ぶ<br/>・enabled=false なら捨てる<br/>・有効なものだけ r.tools[name]=tool に登録<br/>・関数名の重複チェック"]
+    E["④ registry.Specs() / Prompts()<br/>有効化されたツールの説明書をLLMに渡す準備<br/>全宣言を1個の genai.Tool にまとめる"]
+    F["⑤ registry.Execute(ctx, fc)<br/>LLMが query_otx を要求したら<br/>r.tools[&quot;query_otx&quot;] を引いて実行"]
+
+    A --> B --> C --> D --> E
+    E -.->|チャットのループ内| F
+    F -.->|結果をLLMに戻す| F
+```
+
+- `allTools` を回す = `Flags` / `Prompts`（全ツール対象）
+- `tools` / `toolSpecs` を回す = `Specs` / `Execute` / `EnabledTools`（Initで有効化されたものだけ）
+
+各ツールの `Spec()`（単数）が「その料理1枚のメニュー」、Registryの `Specs()`（複数）が「全部を綴じた1冊のメニューブック」。LLMには冊子1冊を渡す（複数の `genai.Tool` を渡すとGeminiがエラーを出すため1個にまとめる）。
+
+<!-- 実装を進めて追加事項が出たらここに追記 -->
 
 ## 第11章 より実践的なツールの実装：BigQueryからのログ取得
 
