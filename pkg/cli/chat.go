@@ -9,6 +9,7 @@ import (
 	"github.com/m-mizutani/goerr/v2"
 	"github.com/m-mizutani/leveret/pkg/model"
 	"github.com/m-mizutani/leveret/pkg/tool"
+	"github.com/m-mizutani/leveret/pkg/tool/otx"
 	"github.com/m-mizutani/leveret/pkg/usecase/chat"
 	"github.com/urfave/cli/v3"
 
@@ -23,6 +24,7 @@ func chatCommand() *cli.Command {
 
 	registry := tool.NewRegistry(
 		alert.NewSearchAlerts(),
+		otx.New(),
 	)
 
 	flags := []cli.Flag{
