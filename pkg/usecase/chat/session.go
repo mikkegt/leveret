@@ -113,6 +113,7 @@ func (s *Session) Send(ctx context.Context, message string) (*genai.GenerateCont
 			break
 		}
 
+		var respParts []*genai.Part
 		for _, funcCall := range funcCalls {
 			funcResp, err := s.registry.Execute(ctx, *funcCall)
 			if err != nil {
@@ -121,11 +122,13 @@ func (s *Session) Send(ctx context.Context, message string) (*genai.GenerateCont
 					Response: map[string]any{"error": err.Error()},
 				}
 			}
-			funcRespContent := &genai.Content{
+			respParts = append(respParts, &genai.Part{FunctionResponse: funcResp})
+		}
+		if len(respParts) > 0 {
+			s.history.Contents = append(s.history.Contents, &genai.Content{
 				Role:  genai.RoleUser,
-				Parts: []*genai.Part{{FunctionResponse: funcResp}},
-			}
-			s.history.Contents = append(s.history.Contents, funcRespContent)
+				Parts: respParts,
+			})
 		}
 	}
 

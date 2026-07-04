@@ -10,9 +10,10 @@ import (
 )
 
 type Registry struct {
-	tools     map[string]Tool
-	allTools  []Tool
-	toolSpecs map[*genai.Tool]bool
+	tools        map[string]Tool
+	allTools     []Tool
+	enabledTools []Tool
+	toolSpecs    map[*genai.Tool]bool
 }
 
 var errToolNotFound = goerr.New("tool not found")
@@ -47,6 +48,8 @@ func (r *Registry) Init(ctx context.Context, client *Client) error {
 		if !enabled {
 			continue
 		}
+
+		r.enabledTools = append(r.enabledTools, t)
 
 		spec := t.Spec()
 		if spec == nil || len(spec.FunctionDeclarations) == 0 {
@@ -93,7 +96,7 @@ func (r *Registry) Specs() []*genai.Tool {
 
 func (r *Registry) Prompts(ctx context.Context) string {
 	var prompts []string
-	for _, t := range r.allTools {
+	for _, t := range r.enabledTools {
 		if prompt := t.Prompt(ctx); prompt != "" {
 			prompts = append(prompts, prompt)
 		}
